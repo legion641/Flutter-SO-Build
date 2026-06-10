@@ -112,7 +112,7 @@ jobs:
           summary_lines=()
 
           for dart_ver in "${dart_versions[@]}"; do
-            RELEASE_URL="https://github.com/TechnoIndian/Flutter-SO-Build/releases/tag/v${dart_ver}"
+            RELEASE_URL="https://github.com/legion641/Flutter-SO-Build/releases/tag/v${dart_ver}"
             echo "🔍 Checking existing release v${dart_ver}..."
 
             if gh release view "v${dart_ver}" &>/dev/null; then
