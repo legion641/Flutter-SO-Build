@@ -70,8 +70,7 @@ jobs:
               flutter create flutter_so >/dev/null
               cd flutter_so
               flutter pub get
-              # Если нужен NDK, раскомментируйте и укажите свой путь
-              # echo "ndk.dir=$HOME/android-ndk/21.4.7075529" > android/local.properties
+              echo "ndk.dir=$HOME/android-ndk/21.4.7075529" > android/local.properties
               flutter build apk --target-platform android-arm,android-arm64
               cd ..
 
