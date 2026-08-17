@@ -22,13 +22,25 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Install Android NDK 23
+        run: |
+          echo "📦 Installing NDK 23..."
+          mkdir -p $HOME/android-ndk
+          cd $HOME/android-ndk
+          wget -q https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
+          unzip -q android-ndk-r23b-linux.zip
+          echo "NDK installed at $HOME/android-ndk/android-ndk-r23b"
+
       - name: Build & Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANDROID_NDK_HOME: ${{ runner.home }}/android-ndk/android-ndk-r23b
         run: |
+          # Загружаем актуальный список стабильных релизов
           echo "📥 Fetching stable releases from Flutter..."
           curl -s https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json -o releases.json
 
+          # Строим карту Dart → Flutter (только stable)
           declare -A dart_map
           while IFS= read -r dart_ver; do
             flutter_versions=$(jq -r --arg dart "$dart_ver" \
@@ -36,6 +48,7 @@ jobs:
             dart_map["$dart_ver"]="$flutter_versions"
           done < <(jq -r '.releases[] | select(.channel=="stable") | .dart_sdk_version' releases.json | sort -uV)
 
+          # Собираем список Dart-версий (отсортированный)
           mapfile -t dart_versions < <(printf '%s\n' "${!dart_map[@]}" | sort -V)
 
           echo "## 📦 Flutter SO Build Summary" >> $GITHUB_STEP_SUMMARY
@@ -57,30 +70,42 @@ jobs:
 
             echo "🚀 Starting build for Dart v${dart_ver}"
             mkdir -p release/arm64 release/armeabi_v7a
+            build_failed=0
 
             for flutter_ver in ${dart_map[$dart_ver]}; do
               echo "⚡ Building Flutter v${flutter_ver}"
-              wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_$\{flutter_ver\}-stable.tar.xz
+              wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${flutter_ver}-stable.tar.xz
               tar xf flutter_linux_${flutter_ver}-stable.tar.xz
               export PATH=$PWD/flutter/bin:$PATH
 
               flutter create flutter_so >/dev/null
               cd flutter_so
               flutter pub get
-              flutter build apk --target-platform android-arm,android-arm64
+              # Сборка с обработкой ошибки
+              if flutter build apk --target-platform android-arm,android-arm64; then
+                cd ..
+                BASE_PATH="flutter_so/build/app/intermediates/stripped_native_libs"
+                SO_ARM64=$(find "$BASE_PATH" -path "*/arm64-v8a/libflutter.so" -print -quit)
+                SO_ARMEABI=$(find "$BASE_PATH" -path "*/armeabi-v7a/libflutter.so" -print -quit)
+
+                mkdir -p "release/arm64/Flutter SO [v${flutter_ver}]"
+                mkdir -p "release/armeabi_v7a/Flutter SO [v${flutter_ver}]"
+                cp "$SO_ARM64" "release/arm64/Flutter SO [v${flutter_ver}]/libflutter.so"
+                cp "$SO_ARMEABI" "release/armeabi_v7a/Flutter SO [v${flutter_ver}]/libflutter.so"
+              else
+                echo "❌ Build failed for Flutter v${flutter_ver}, skipping this version..."
+                build_failed=1
+              fi
               cd ..
-
-              BASE_PATH="flutter_so/build/app/intermediates/stripped_native_libs"
-              SO_ARM64=$(find "$BASE_PATH" -path "*/arm64-v8a/libflutter.so" -print -quit)
-              SO_ARMEABI=$(find "$BASE_PATH" -path "*/armeabi-v7a/libflutter.so" -print -quit)
-
-              mkdir -p "release/arm64/Flutter SO [v${flutter_ver}]"
-              mkdir -p "release/armeabi_v7a/Flutter SO [v${flutter_ver}]"
-              cp "$SO_ARM64" "release/arm64/Flutter SO [v${flutter_ver}]/libflutter.so"
-              cp "$SO_ARMEABI" "release/armeabi_v7a/Flutter SO [v${flutter_ver}]/libflutter.so"
-
               rm -rf flutter flutter_so flutter_linux_${flutter_ver}-stable.tar.xz
             done
+
+            if [ $build_failed -eq 1 ]; then
+              echo "⚠️ Some builds failed for Dart v${dart_ver}, skipping release creation."
+              summary_lines+=("| ${dart_ver} | ${dart_map[$dart_ver]} | ❌ Failed (partial) |")
+              rm -rf release
+              continue
+            fi
 
             flutter_list=$(echo ${dart_map[$dart_ver]} | sed 's/ /, /g')
 
