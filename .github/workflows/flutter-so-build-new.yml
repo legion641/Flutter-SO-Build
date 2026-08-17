@@ -26,11 +26,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Загружаем актуальный список стабильных релизов
           echo "📥 Fetching stable releases from Flutter..."
           curl -s https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json -o releases.json
 
-          # Строим карту Dart → Flutter (только stable)
           declare -A dart_map
           while IFS= read -r dart_ver; do
             flutter_versions=$(jq -r --arg dart "$dart_ver" \
@@ -38,7 +36,6 @@ jobs:
             dart_map["$dart_ver"]="$flutter_versions"
           done < <(jq -r '.releases[] | select(.channel=="stable") | .dart_sdk_version' releases.json | sort -uV)
 
-          # Собираем список Dart-версий (отсортированный)
           mapfile -t dart_versions < <(printf '%s\n' "${!dart_map[@]}" | sort -V)
 
           echo "## 📦 Flutter SO Build Summary" >> $GITHUB_STEP_SUMMARY
@@ -70,7 +67,6 @@ jobs:
               flutter create flutter_so >/dev/null
               cd flutter_so
               flutter pub get
-              echo "ndk.dir=$HOME/android-ndk/21.4.7075529" > android/local.properties
               flutter build apk --target-platform android-arm,android-arm64
               cd ..
 
