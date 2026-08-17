@@ -1,0 +1,85 @@
+- name: Build & Release
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  run: |
+    # Загружаем актуальный список стабильных релизов
+    echo "📥 Fetching stable releases from Flutter..."
+    curl -s https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json -o releases.json
+
+    # Строим карту Dart → Flutter (только stable)
+    declare -A dart_map
+    while IFS= read -r dart_ver; do
+      flutter_versions=$(jq -r --arg dart "$dart_ver" \
+        '.releases[] | select(.channel=="stable" and .dart_sdk_version==$dart) | .version' releases.json | sort -V | tr '\n' ' ')
+      dart_map["$dart_ver"]="$flutter_versions"
+    done < <(jq -r '.releases[] | select(.channel=="stable") | .dart_sdk_version' releases.json | sort -uV)
+
+    # Собираем список Dart-версий (отсортированный)
+    mapfile -t dart_versions < <(printf '%s\n' "${!dart_map[@]}" | sort -V)
+
+    echo "## 📦 Flutter SO Build Summary" >> $GITHUB_STEP_SUMMARY
+    echo "" >> $GITHUB_STEP_SUMMARY
+    echo "| Dart Version | Flutter Versions | Status |" >> $GITHUB_STEP_SUMMARY
+    echo "|-------------|------------------|--------|" >> $GITHUB_STEP_SUMMARY
+
+    summary_lines=()
+
+    for dart_ver in "${dart_versions[@]}"; do
+      RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${dart_ver}"
+      echo "🔍 Checking existing release v${dart_ver}..."
+
+      if gh release view "v${dart_ver}" &>/dev/null; then
+        echo "✅ Release v${dart_ver} already exists, skipping..."
+        summary_lines+=("| ${dart_ver} | ${dart_map[$dart_ver]} | [✅ Already Released](${RELEASE_URL}) |")
+        continue
+      fi
+
+      echo "🚀 Starting build for Dart v${dart_ver}"
+      mkdir -p release/arm64 release/armeabi_v7a
+
+      for flutter_ver in ${dart_map[$dart_ver]}; do
+        echo "⚡ Building Flutter v${flutter_ver}"
+        wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${flutter_ver}-stable.tar.xz
+        tar xf flutter_linux_${flutter_ver}-stable.tar.xz
+        export PATH=$PWD/flutter/bin:$PATH
+
+        flutter create flutter_so >/dev/null
+        cd flutter_so
+        flutter pub get
+        # Если нужен NDK, раскомментируйте и укажите свой путь
+        # echo "ndk.dir=$HOME/android-ndk/21.4.7075529" > android/local.properties
+        flutter build apk --target-platform android-arm,android-arm64
+        cd ..
+
+        BASE_PATH="flutter_so/build/app/intermediates/stripped_native_libs"
+        SO_ARM64=$(find "$BASE_PATH" -path "*/arm64-v8a/libflutter.so" -print -quit)
+        SO_ARMEABI=$(find "$BASE_PATH" -path "*/armeabi-v7a/libflutter.so" -print -quit)
+
+        mkdir -p "release/arm64/Flutter SO [v${flutter_ver}]"
+        mkdir -p "release/armeabi_v7a/Flutter SO [v${flutter_ver}]"
+        cp "$SO_ARM64" "release/arm64/Flutter SO [v${flutter_ver}]/libflutter.so"
+        cp "$SO_ARMEABI" "release/armeabi_v7a/Flutter SO [v${flutter_ver}]/libflutter.so"
+
+        rm -rf flutter flutter_so flutter_linux_${flutter_ver}-stable.tar.xz
+      done
+
+      flutter_list=$(echo ${dart_map[$dart_ver]} | sed 's/ /, /g')
+
+      cd release
+      cd arm64 && zip -qr ../libflutter_so_arm64.zip . && cd ..
+      cd armeabi_v7a && zip -qr ../libflutter_so_armeabi_v7a.zip . && cd ..
+      gh release create "v${dart_ver}" \
+        libflutter_so_arm64.zip \
+        libflutter_so_armeabi_v7a.zip \
+        --title "Dart v${dart_ver}" \
+        --notes "Dart v${dart_ver} 𒁍 Flutter Versions: ${flutter_list}"
+      cd ..
+      rm -rf release
+
+      summary_lines+=("| ${dart_ver} | ${flutter_list} | [🎉 Released](${RELEASE_URL}) |")
+    done
+
+    # Выводим summary в обратном порядке (последние сверху)
+    for (( idx=${#summary_lines[@]}-1 ; idx>=0 ; idx-- )); do
+        echo "${summary_lines[idx]}" >> $GITHUB_STEP_SUMMARY
+    done
